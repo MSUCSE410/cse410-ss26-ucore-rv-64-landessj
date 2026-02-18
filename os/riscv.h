@@ -11,6 +11,7 @@ static inline uint64 r_mhartid()
 	return x;
 }
 
+#define SSTATUS_SUM (1L << 18)
 // Machine Status Register, mstatus
 
 #define MSTATUS_MPP_MASK (3L << 11) // previous mode.
