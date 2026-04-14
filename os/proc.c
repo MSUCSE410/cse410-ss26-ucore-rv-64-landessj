@@ -4,6 +4,7 @@
 #include "trap.h"
 #include "vm.h"
 #include "queue.h"
+#include "timer.h"
 
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
@@ -83,6 +84,11 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+	p->stride = 0;
+	p->priority = 16;
+	memset(p->syscall_times, 0, sizeof(p->syscall_times));
+	p->startTime = 0;
+	p->runTime = 0;
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
@@ -97,32 +103,29 @@ found:
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
-void scheduler()
-{
-	struct proc *p;
-	for (;;) {
-		/*int has_proc = 0;
-		for (p = pool; p < &pool[NPROC]; p++) {
-			if (p->state == RUNNABLE) {
-				has_proc = 1;
-				tracef("swtich to proc %d", p - pool);
-				p->state = RUNNING;
-				current_proc = p;
-				swtch(&idle.context, &p->context);
-			}
-		}
-		if(has_proc == 0) {
-			panic("all app are over!\n");
-		}*/
-		p = fetch_task();
-		if (p == NULL) {
-			panic("all app are over!\n");
-		}
-		tracef("swtich to proc %d", p - pool);
-		p->state = RUNNING;
-		current_proc = p;
-		swtch(&idle.context, &p->context);
-	}
+void scheduler() {
+    for (;;) {
+        struct proc *p = NULL;
+        uint64 min_stride = (uint64)-1;
+        for (struct proc *pp = pool; pp < &pool[NPROC]; pp++) {
+            if (pp->state == RUNNABLE) {
+                if (pp->stride < min_stride) {
+                    min_stride = pp->stride;
+                    p = pp;
+                }
+            }
+        }
+        if (p == NULL) {
+            panic("all app are over!\n");
+        }
+        p->stride += BIG_STRIDE / p->priority;
+        if (p->startTime == 0) {
+            p->startTime = get_cycle();
+        }
+        p->state = RUNNING;
+        current_proc = p;
+        swtch(&idle.context, &p->context);
+    }
 }
 
 // Switch to scheduler.  Must hold only p->lock
@@ -144,7 +147,6 @@ void sched()
 void yield()
 {
 	current_proc->state = RUNNABLE;
-	add_task(current_proc);
 	sched();
 }
 
@@ -226,11 +228,22 @@ int wait(int pid, int *code)
 			return -1;
 		}
 		p->state = RUNNABLE;
-		add_task(p);
 		sched();
 	}
 }
-
+int spawn(char *name) {
+    int id = get_id_by_name(name);
+    if (id < 0) return -1;
+    struct proc *np = allocproc();
+    if (np == NULL) return -1;
+    np->parent = curr_proc();
+    if (loader(id, np) < 0) {
+        freeproc(np);
+        return -1;
+    }
+    add_task(np);
+    return np->pid;
+}
 // Exit the current process.
 void exit(int code)
 {
